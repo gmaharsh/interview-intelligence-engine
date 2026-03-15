@@ -1,0 +1,94 @@
+# Crawler config: companies to search and how to build queries.
+
+# Companies by category (all are flattened for search).
+companies:
+  FAANG:
+    - Amazon
+    - Google
+    - Meta
+    - Apple
+    - Netflix
+  "Big Tech":
+    - Microsoft
+    - NVIDIA
+    - Adobe
+    - Salesforce
+    - Oracle
+  "AI / ML companies":
+    - OpenAI
+    - Anthropic
+    - DeepMind
+    - Hugging Face
+    - Cohere
+    - Scale AI
+  "High-growth tech companies":
+    - Stripe
+    - Databricks
+    - Snowflake
+    - Palantir
+    - Airbnb
+    - Uber
+    - Lyft
+  "Infrastructure / developer tooling":
+    - Cloudflare
+    - HashiCorp
+    - Datadog
+    - Elastic
+    - MongoDB
+    - Confluent
+  Fintech:
+    - Block
+    - PayPal
+    - Robinhood
+    - Coinbase
+  "Tech platforms":
+    - Tesla
+    - Spotify
+    - Pinterest
+    - Snap
+    - Reddit
+  "AI startups":
+    - Perplexity AI
+    - Runway
+    - Character AI
+    - Midjourney
+  "Robotics / deep tech":
+    - Boston Dynamics
+    - Figure AI
+    - Covariant
+    - Zipline
+  "Semiconductor / hardware":
+    - AMD
+    - Intel
+    - Qualcomm
+    - Arm
+
+# Query template. "{company}" is replaced by each company name.
+query_template: "{company} interviewing"
+
+# Tavily search options (optional overrides).
+search:
+  max_results: 5
+  search_depth: basic
+
+# Extract: skip these domains (video, social, paywalled – Tavily often can't extract them).
+extract:
+  exclude_domains:
+    - youtube.com
+    - youtu.be
+    - spotify.com
+    - open.spotify.com
+    - instagram.com
+    - facebook.com
+    - fb.com
+    - linkedin.com
+    - tiktok.com
+    - vimeo.com
+    - reddit.com
+    - glassdoor.com
+    - glassdoor.co
+    - indeed.com
+    - quora.com
+    - teamblind.com
+    - twitter.com
+    - x.com

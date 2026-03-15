@@ -1,0 +1,23 @@
+[build-system]
+requires = ["setuptools>=61", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "interview-rag-pipeline"
+version = "0.1.0"
+description = "Add your description here"
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = [
+    "tavily-python>=0.7.23",
+    "python-dotenv>=1.0.0",
+    "pyyaml>=6.0",
+    "requests>=2.32.5",
+    "trafilatura>=1.6.0",
+]
+
+[project.scripts]
+qa = "crawler.qa:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
