@@ -18,6 +18,7 @@ dependencies = [
 
 [project.scripts]
 qa = "crawler.qa:main"
+dataset = "crawler.dataset:main"
 
 [tool.setuptools.packages.find]
 where = ["src"]

@@ -4,25 +4,8 @@ import json
 import sys
 from pathlib import Path
 
-from .corpus import get_corpus_dir
+from .corpus import get_corpus_dir, load_corpus_docs
 from .quality import infer_source_type, is_valid_document, score_quality
-
-
-def load_corpus_docs(corpus_path: Path) -> list[dict]:
-    """Load corpus.jsonl into a list of doc dicts."""
-    docs: list[dict] = []
-    if not corpus_path.exists():
-        return docs
-    with corpus_path.open(encoding="utf-8") as f:
-        for line in f:
-            line = line.strip()
-            if not line:
-                continue
-            try:
-                docs.append(json.loads(line))
-            except json.JSONDecodeError:
-                continue
-    return docs
 
 
 # Pass rate threshold: exit 0 if pass_rate >= this (e.g. 0.9 for dev), else exit 1.
@@ -35,8 +18,7 @@ def run_qa(corpus_dir: Path | None = None, report_path: Path | None = None) -> d
     Returns summary dict. Optionally writes report_path (JSONL: one line per doc with qa fields).
     """
     directory = corpus_dir or get_corpus_dir()
-    path = directory / "corpus.jsonl"
-    docs = load_corpus_docs(path)
+    docs = load_corpus_docs(directory)
     if not docs:
         return {
             "total": 0,

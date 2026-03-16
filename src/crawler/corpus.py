@@ -12,6 +12,36 @@ def get_corpus_dir() -> Path:
     return Path(__file__).resolve().parent.parent.parent / "data" / "corpus"
 
 
+def load_corpus_docs(corpus_dir: Path | None = None) -> list[dict]:
+    """Load all documents from corpus.jsonl. Returns list of doc dicts."""
+    directory = corpus_dir or get_corpus_dir()
+    path = directory / "corpus.jsonl"
+    docs: list[dict] = []
+    if not path.exists():
+        return docs
+    with path.open(encoding="utf-8") as f:
+        for line in f:
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                docs.append(json.loads(line))
+            except json.JSONDecodeError:
+                continue
+    return docs
+
+
+def write_corpus_docs(docs: list[dict], corpus_dir: Path | None = None) -> Path:
+    """Overwrite corpus.jsonl with the given list of doc dicts. Use after cleaning."""
+    directory = corpus_dir or get_corpus_dir()
+    directory.mkdir(parents=True, exist_ok=True)
+    path = directory / "corpus.jsonl"
+    with path.open("w", encoding="utf-8") as f:
+        for doc in docs:
+            f.write(json.dumps(doc, ensure_ascii=False) + "\n")
+    return path
+
+
 def get_corpus_urls(corpus_dir: Path | None = None) -> set[str]:
     """Return set of URLs already in corpus.jsonl. Use to skip duplicates on re-runs."""
     directory = corpus_dir or get_corpus_dir()
