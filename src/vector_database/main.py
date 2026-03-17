@@ -1,17 +1,241 @@
+from __future__ import annotations
+
+"""Vector database setup and chunk ingestion."""
+
+import hashlib
+import json
+import os
+from pathlib import Path
+from typing import Any, Dict, List
+
+from dotenv import load_dotenv
+from langchain_huggingface import HuggingFaceEmbeddings
 from langchain_qdrant import QdrantVectorStore
 from qdrant_client import QdrantClient
 from qdrant_client.models import Distance, VectorParams
-from dotenv import load_dotenv
+
+from operational.constants import VECTOR_DATABASE_COLLECTION_NAME, EMBEDDING_MODEL
 
 load_dotenv()
 
-client = QdrantClient(
-    url= os.getenv("QDRANT_URL"),
-    api_key= os.getenv("QDRANT_API_KEY")
-)
 
-vector_store = QdrantVectorStore(
-    client=client,
-    collection_name="test_collection",
-    embedding_function=OpenAIEmbeddings(),
-)
+def get_qdrant_client() -> QdrantClient:
+    """Initialize and return a Qdrant client from environment variables."""
+    url = os.getenv("QDRANT_URL")
+    api_key = os.getenv("QDRANT_API_KEY")
+
+    if not url:
+        raise RuntimeError("QDRANT_URL is not set in environment.")
+
+    return QdrantClient(url=url, api_key=api_key)
+
+
+def get_embeddings_model() -> HuggingFaceEmbeddings:
+    """Return the embedding model used for chunks."""
+    return HuggingFaceEmbeddings(model_name=EMBEDDING_MODEL)
+
+
+def ensure_collection(client: QdrantClient, vector_size: int) -> None:
+    """
+    Create the collection if it does not exist.
+    If it exists, validate schema compatibility.
+    """
+    collections = client.get_collections()
+    names = {c.name for c in collections.collections}
+
+    if VECTOR_DATABASE_COLLECTION_NAME not in names:
+        client.create_collection(
+            collection_name=VECTOR_DATABASE_COLLECTION_NAME,
+            vectors_config=VectorParams(size=vector_size, distance=Distance.COSINE),
+        )
+        return
+
+    info = client.get_collection(VECTOR_DATABASE_COLLECTION_NAME)
+    config = info.config.params.vectors
+
+    # Handle unnamed dense vector config
+    existing_size = config.size
+    existing_distance = config.distance
+
+    if existing_size != vector_size:
+        raise RuntimeError(
+            f"Collection '{VECTOR_DATABASE_COLLECTION_NAME}' exists with vector size "
+            f"{existing_size}, expected {vector_size}."
+        )
+
+    if existing_distance != Distance.COSINE:
+        raise RuntimeError(
+            f"Collection '{VECTOR_DATABASE_COLLECTION_NAME}' exists with distance "
+            f"{existing_distance}, expected {Distance.COSINE}."
+        )
+
+
+def load_chunks(path: Path) -> List[Dict[str, Any]]:
+    """Load all chunks from a JSONL file and report malformed lines."""
+    if not path.exists():
+        raise FileNotFoundError(f"Chunks file not found: {path}")
+
+    chunks: List[Dict[str, Any]] = []
+    malformed_count = 0
+
+    with path.open(encoding="utf-8") as f:
+        for line_num, line in enumerate(f, start=1):
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                obj = json.loads(line)
+                if isinstance(obj, dict):
+                    chunks.append(obj)
+                else:
+                    malformed_count += 1
+                    print(f"[WARN] Line {line_num}: JSON is not an object, skipping.")
+            except json.JSONDecodeError as exc:
+                malformed_count += 1
+                print(f"[WARN] Line {line_num}: malformed JSON, skipping. Error: {exc}")
+
+    if malformed_count:
+        print(f"[WARN] Skipped {malformed_count} malformed lines from {path}")
+
+    return chunks
+
+
+def sanitize_metadata(metadata: Dict[str, Any]) -> Dict[str, Any]:
+    """
+    Keep metadata Qdrant-friendly.
+    Converts unsupported values to strings where needed.
+    """
+    sanitized: Dict[str, Any] = {}
+
+    for key, value in metadata.items():
+        if value is None:
+            continue
+        if isinstance(value, (str, int, float, bool)):
+            sanitized[key] = value
+        elif isinstance(value, list):
+            sanitized[key] = [
+                item if isinstance(item, (str, int, float, bool)) else str(item)
+                for item in value
+            ]
+        else:
+            sanitized[key] = str(value)
+
+    return sanitized
+
+
+def build_chunk_id(chunk: Dict[str, Any]) -> str:
+    """
+    Return a stable chunk ID.
+    Prefer provided chunk_id, otherwise derive one deterministically.
+    """
+    chunk_id = chunk.get("chunk_id")
+    if chunk_id:
+        return str(chunk_id)
+
+    raw = {
+        "url": chunk.get("url"),
+        "section_title": chunk.get("section_title"),
+        "parent_section_id": chunk.get("parent_section_id"),
+        "chunk_text": chunk.get("chunk_text", ""),
+    }
+    digest = hashlib.sha256(
+        json.dumps(raw, sort_keys=True, ensure_ascii=False).encode("utf-8")
+    ).hexdigest()
+    return digest
+
+
+def ingest_chunks(chunks_path: Path | None = None, batch_size: int = 8) -> None:
+    """
+    Ingest chunks into Qdrant.
+
+    - Reads chunks JSONL
+    - Embeds chunk_text
+    - Upserts into Qdrant with metadata payload
+    """
+    from crawler.corpus import get_corpus_dir
+
+    corpus_dir = get_corpus_dir()
+    chunks_path = chunks_path or (corpus_dir / "chunks.jsonl")
+
+    chunks = load_chunks(chunks_path)
+    if not chunks:
+        print(f"No chunks found at {chunks_path}")
+        return
+
+    print(f"Loaded {len(chunks)} chunks from {chunks_path}")
+
+    embeddings = get_embeddings_model()
+    sample_vec = embeddings.embed_query("dimension probe")
+    vector_size = len(sample_vec)
+
+    client = get_qdrant_client()
+    ensure_collection(client, vector_size=vector_size)
+    print(f"Collection '{VECTOR_DATABASE_COLLECTION_NAME}' is ready.")
+
+    vector_store = QdrantVectorStore(
+        client=client,
+        collection_name=VECTOR_DATABASE_COLLECTION_NAME,
+        embedding=embeddings,
+    )
+
+    texts: List[str] = []
+    metadatas: List[Dict[str, Any]] = []
+    ids: List[str] = []
+
+    total_ingested = 0
+    skipped_empty = 0
+
+    def flush_batch() -> None:
+        nonlocal texts, metadatas, ids, total_ingested
+
+        if not texts:
+            return
+
+        try:
+            vector_store.add_texts(
+                texts=texts,
+                metadatas=metadatas,
+                ids=ids,
+            )
+            total_ingested += len(texts)
+            print(f"[INFO] Ingested batch of {len(texts)} chunks. Total: {total_ingested}")
+        except Exception as exc:
+            print(f"[ERROR] Failed to ingest batch with {len(texts)} chunks.")
+            print(f"[ERROR] First batch ID: {ids[0] if ids else 'N/A'}")
+            raise exc
+        finally:
+            texts = []
+            metadatas = []
+            ids = []
+
+    for ch in chunks:
+        text = (ch.get("chunk_text") or "").strip()
+        if not text:
+            skipped_empty += 1
+            continue
+
+        metadata = sanitize_metadata({k: v for k, v in ch.items() if k != "chunk_text"})
+        chunk_id = build_chunk_id(ch)
+
+        texts.append(text)
+        metadatas.append(metadata)
+        ids.append(chunk_id)
+
+        if len(texts) >= batch_size:
+            flush_batch()
+
+    flush_batch()
+
+    print(
+        f"Finished ingestion into '{VECTOR_DATABASE_COLLECTION_NAME}'. "
+        f"Ingested={total_ingested}, Skipped empty={skipped_empty}"
+    )
+
+
+def main() -> None:
+    """CLI: ingest all chunks into the vector store."""
+    ingest_chunks()
+
+
+if __name__ == "__main__":
+    main()
