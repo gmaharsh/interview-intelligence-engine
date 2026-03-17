@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import time
 from pathlib import Path
 from typing import Any, Dict, List
 
@@ -12,7 +13,7 @@ from dotenv import load_dotenv
 from langchain_huggingface import HuggingFaceEmbeddings
 from langchain_qdrant import QdrantVectorStore
 from qdrant_client import QdrantClient
-from qdrant_client.models import Distance, VectorParams
+from qdrant_client.models import Distance, PayloadSchemaType, VectorParams
 
 from operational.constants import VECTOR_DATABASE_COLLECTION_NAME, EMBEDDING_MODEL
 
@@ -68,6 +69,37 @@ def ensure_collection(client: QdrantClient, vector_size: int) -> None:
             f"Collection '{VECTOR_DATABASE_COLLECTION_NAME}' exists with distance "
             f"{existing_distance}, expected {Distance.COSINE}."
         )
+
+
+def ensure_payload_indexes(client: QdrantClient) -> None:
+    """Create keyword/bool payload indexes needed for filtered search.
+
+    langchain_qdrant nests all metadata under a 'metadata' key in the payload,
+    so filter fields must be prefixed with 'metadata.'.
+    """
+    keyword_fields = [
+        "metadata.company",
+        "metadata.source_type",
+        "metadata.section_title",
+        "metadata.chunk_type",
+    ]
+    bool_fields = ["metadata.is_official"]
+
+    for field in keyword_fields:
+        client.create_payload_index(
+            collection_name=VECTOR_DATABASE_COLLECTION_NAME,
+            field_name=field,
+            field_schema=PayloadSchemaType.KEYWORD,
+        )
+
+    for field in bool_fields:
+        client.create_payload_index(
+            collection_name=VECTOR_DATABASE_COLLECTION_NAME,
+            field_name=field,
+            field_schema=PayloadSchemaType.BOOL,
+        )
+
+    print(f"Payload indexes ensured for collection '{VECTOR_DATABASE_COLLECTION_NAME}'.")
 
 
 def load_chunks(path: Path) -> List[Dict[str, Any]]:
@@ -170,6 +202,7 @@ def ingest_chunks(chunks_path: Path | None = None, batch_size: int = 8) -> None:
 
     client = get_qdrant_client()
     ensure_collection(client, vector_size=vector_size)
+    ensure_payload_indexes(client)
     print(f"Collection '{VECTOR_DATABASE_COLLECTION_NAME}' is ready.")
 
     vector_store = QdrantVectorStore(
@@ -185,28 +218,42 @@ def ingest_chunks(chunks_path: Path | None = None, batch_size: int = 8) -> None:
     total_ingested = 0
     skipped_empty = 0
 
-    def flush_batch() -> None:
+    def flush_batch(max_retries: int = 4, backoff_base: float = 2.0) -> None:
         nonlocal texts, metadatas, ids, total_ingested
 
         if not texts:
             return
 
-        try:
-            vector_store.add_texts(
-                texts=texts,
-                metadatas=metadatas,
-                ids=ids,
-            )
-            total_ingested += len(texts)
-            print(f"[INFO] Ingested batch of {len(texts)} chunks. Total: {total_ingested}")
-        except Exception as exc:
-            print(f"[ERROR] Failed to ingest batch with {len(texts)} chunks.")
-            print(f"[ERROR] First batch ID: {ids[0] if ids else 'N/A'}")
-            raise exc
-        finally:
-            texts = []
-            metadatas = []
-            ids = []
+        batch_texts = texts[:]
+        batch_metadatas = metadatas[:]
+        batch_ids = ids[:]
+        texts.clear()
+        metadatas.clear()
+        ids.clear()
+
+        last_exc: Exception | None = None
+        for attempt in range(1, max_retries + 1):
+            try:
+                vector_store.add_texts(
+                    texts=batch_texts,
+                    metadatas=batch_metadatas,
+                    ids=batch_ids,
+                )
+                total_ingested += len(batch_texts)
+                print(f"[INFO] Ingested batch of {len(batch_texts)} chunks. Total: {total_ingested}")
+                return
+            except Exception as exc:
+                last_exc = exc
+                wait = backoff_base ** attempt
+                print(
+                    f"[WARN] Attempt {attempt}/{max_retries} failed for batch "
+                    f"(first ID: {batch_ids[0] if batch_ids else 'N/A'}). "
+                    f"Retrying in {wait:.0f}s... Error: {exc}"
+                )
+                time.sleep(wait)
+
+        print(f"[ERROR] Batch permanently failed after {max_retries} retries. Skipping.")
+        raise RuntimeError(f"Batch ingestion failed after {max_retries} retries.") from last_exc
 
     for ch in chunks:
         text = (ch.get("chunk_text") or "").strip()
@@ -222,9 +269,15 @@ def ingest_chunks(chunks_path: Path | None = None, batch_size: int = 8) -> None:
         ids.append(chunk_id)
 
         if len(texts) >= batch_size:
-            flush_batch()
+            try:
+                flush_batch()
+            except RuntimeError:
+                pass  # already logged; continue with next batch
 
-    flush_batch()
+    try:
+        flush_batch()
+    except RuntimeError:
+        pass
 
     print(
         f"Finished ingestion into '{VECTOR_DATABASE_COLLECTION_NAME}'. "
