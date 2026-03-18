@@ -134,7 +134,19 @@ def main() -> None:
         action="store_true",
         help="(With --rewrite) Disable HyDE hypothetical answer generation.",
     )
+    parser.add_argument(
+        "--generate",
+        action="store_true",
+        help=(
+            "Generate a synthesised answer from retrieved chunks using Groq. "
+            "Automatically enables --rewrite. Requires GROQ_API_KEY."
+        ),
+    )
     args = parser.parse_args()
+
+    # --generate implies --rewrite (need the best possible retrieval for generation)
+    if args.generate:
+        args.rewrite = True
 
     if args.rewrite:
         from vector_database.query_rewrite import rewrite_and_search
@@ -159,6 +171,14 @@ def main() -> None:
             only_official=bool(args.only_official),
         )
         score_label = "cosine"
+
+    if args.generate:
+        from llm.generate import generate_answer
+
+        print("\n[INFO] Generating answer from retrieved chunks...\n")
+        result = generate_answer(args.query, results)
+        print(result)
+        return
 
     for idx, (doc, score) in enumerate(results, start=1):
         print(f"\n--- Result {idx} ({score_label}: {score:.4f}) ---")

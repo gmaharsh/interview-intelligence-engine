@@ -25,6 +25,7 @@ dependencies = [
     "docling-core[chunking]>=2.70.0",
     "docling>=2.80.0",
     "transformers>=4.57.6",
+    "langchain-mistralai>=1.1.2",
 ]
 
 [project.scripts]
