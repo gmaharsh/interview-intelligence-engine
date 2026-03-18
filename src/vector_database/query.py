@@ -86,9 +86,15 @@ def search_chunks_with_score(
     only_official: bool = False,
 ) -> List[Tuple[Document, float]]:
     """Semantic search; returns (Document, cosine_score) pairs, highest score first."""
+    from vector_database.query_rewrite import _is_navigation_noise
+
     vector_store = get_vector_store()
     qdrant_filter = _build_filter(company, source_type, only_official)
-    return vector_store.similarity_search_with_score(query, k=top_k, filter=qdrant_filter)
+    # Fetch extra candidates so filtering doesn't leave us short.
+    fetch_k = max(top_k * 2, 16)
+    raw = vector_store.similarity_search_with_score(query, k=fetch_k, filter=qdrant_filter)
+    filtered = [(doc, score) for doc, score in raw if not _is_navigation_noise(doc)]
+    return filtered[:top_k]
 
 
 def main() -> None:
@@ -110,18 +116,52 @@ def main() -> None:
         action="store_true",
         help="Restrict to official company sources.",
     )
+    parser.add_argument(
+        "--rewrite",
+        action="store_true",
+        help=(
+            "Enable query rewriting: Groq-based paraphrase expansion + HyDE + "
+            "RRF deduplication. Requires GROQ_API_KEY in environment."
+        ),
+    )
+    parser.add_argument(
+        "--no-expansion",
+        action="store_true",
+        help="(With --rewrite) Disable LLM paraphrase expansion.",
+    )
+    parser.add_argument(
+        "--no-hyde",
+        action="store_true",
+        help="(With --rewrite) Disable HyDE hypothetical answer generation.",
+    )
     args = parser.parse_args()
 
-    results = search_chunks_with_score(
-        args.query,
-        top_k=args.k,
-        company=args.company,
-        source_type=args.source_type,
-        only_official=bool(args.only_official),
-    )
+    if args.rewrite:
+        from vector_database.query_rewrite import rewrite_and_search
+
+        print("[INFO] Query rewriting enabled (expansion + HyDE + RRF).")
+        results = rewrite_and_search(
+            args.query,
+            top_k=args.k,
+            use_expansion=not args.no_expansion,
+            use_hyde=not args.no_hyde,
+            override_company=args.company,
+            override_source_type=args.source_type,
+            only_official=bool(args.only_official),
+        )
+        score_label = "rrf"
+    else:
+        results = search_chunks_with_score(
+            args.query,
+            top_k=args.k,
+            company=args.company,
+            source_type=args.source_type,
+            only_official=bool(args.only_official),
+        )
+        score_label = "cosine"
 
     for idx, (doc, score) in enumerate(results, start=1):
-        print(f"\n--- Result {idx} (score: {score:.4f}) ---")
+        print(f"\n--- Result {idx} ({score_label}: {score:.4f}) ---")
         print("Source:", doc.metadata.get("source_type"), "| Company:", doc.metadata.get("company"))
         print("Title:", doc.metadata.get("title"))
         print("Section:", doc.metadata.get("section_title"))

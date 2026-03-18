@@ -997,6 +997,7 @@ source = { editable = "." }
 dependencies = [
     { name = "docling" },
     { name = "docling-core", extra = ["chunking"] },
+    { name = "groq" },
     { name = "langchain" },
     { name = "langchain-community" },
     { name = "langchain-docling" },
@@ -1016,6 +1017,7 @@ dependencies = [
 requires-dist = [
     { name = "docling", specifier = ">=2.80.0" },
     { name = "docling-core", extras = ["chunking"], specifier = ">=2.70.0" },
+    { name = "groq", specifier = ">=0.9.0" },
     { name = "langchain", specifier = ">=1.2.12" },
     { name = "langchain-community", specifier = ">=0.4.1" },
     { name = "langchain-docling", specifier = ">=2.0.0" },
